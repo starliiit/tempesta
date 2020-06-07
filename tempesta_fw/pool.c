@@ -120,6 +120,9 @@ __tfw_pool_alloc(TfwPool *p, size_t n, bool align, bool *new_page)
 {
 	void *a;
 
+	if (unlikely(!p))
+		return NULL;
+
 	*new_page = false;
 
 	if (align)
