@@ -28,8 +28,13 @@
 #include "bignum.h"
 #include "tls_internal.h"
 
-/*
- * ASN.1 DER decoding routines
+/**
+ * Get the length of an ASN.1 element.
+ * Updates the pointer to immediately behind the length.
+ *
+ * @p	- The position in the ASN.1 data
+ * @end	- End of data
+ * @len	- The variable that will receive the value
  */
 int
 ttls_asn1_get_len(unsigned char **p, const unsigned char *end, size_t *len)
@@ -37,121 +42,141 @@ ttls_asn1_get_len(unsigned char **p, const unsigned char *end, size_t *len)
 	if ((end - *p) < 1)
 		return(TTLS_ERR_ASN1_OUT_OF_DATA);
 
-	if ((**p & 0x80) == 0) {
+	if (!(**p & 0x80)) {
 		*len = *(*p)++;
-	}
-	else {
+	} else {
 		switch(**p & 0x7F) {
 		case 1:
 			if ((end - *p) < 2)
-				return(TTLS_ERR_ASN1_OUT_OF_DATA);
-
+				return TTLS_ERR_ASN1_OUT_OF_DATA;
 			*len = (*p)[1];
-			(*p) += 2;
+			*p += 2;
 			break;
-
 		case 2:
 			if ((end - *p) < 3)
-				return(TTLS_ERR_ASN1_OUT_OF_DATA);
-
+				return TTLS_ERR_ASN1_OUT_OF_DATA;
 			*len = ((size_t)(*p)[1] << 8) | (*p)[2];
-			(*p) += 3;
+			*p += 3;
 			break;
-
 		case 3:
 			if ((end - *p) < 4)
-				return(TTLS_ERR_ASN1_OUT_OF_DATA);
-
-			*len = ((size_t)(*p)[1] << 16) |
-				   ((size_t)(*p)[2] << 8 ) | (*p)[3];
-			(*p) += 4;
+				return TTLS_ERR_ASN1_OUT_OF_DATA;
+			*len = ((size_t)(*p)[1] << 16)
+				| ((size_t)(*p)[2] << 8 ) | (*p)[3];
+			*p += 4;
 			break;
-
 		case 4:
 			if ((end - *p) < 5)
-				return(TTLS_ERR_ASN1_OUT_OF_DATA);
 
-			*len = ((size_t)(*p)[1] << 24)
-				| ((size_t)(*p)[2] << 16)
-				| ((size_t)(*p)[3] << 8 )
-				| (*p)[4];
-			(*p) += 5;
+				return TTLS_ERR_ASN1_OUT_OF_DATA;
+			*len = ((size_t)(*p)[1] << 24) | ((size_t)(*p)[2] << 16)
+				| ((size_t)(*p)[3] << 8 ) | (*p)[4];
+			*p += 5;
 			break;
-
 		default:
-			return(TTLS_ERR_ASN1_INVALID_LENGTH);
+			return TTLS_ERR_ASN1_INVALID_LENGTH;
 		}
 	}
 
-	if (*len > (size_t) (end - *p))
-		return(TTLS_ERR_ASN1_OUT_OF_DATA);
-
-	return 0;
+	return *len > (size_t)(end - *p) ? TTLS_ERR_ASN1_OUT_OF_DATA : 0;
 }
 
+/**
+ * Get the tag and length of the tag. Check for the requested tag.
+ * Updates the pointer to immediately behind the tag and length.
+ *
+ * @p	- The position in the ASN.1 data
+ * @end	- End of data
+ * @len	- The variable that will receive the length
+ * @tag	- The expected tag
+ */
 int
 ttls_asn1_get_tag(unsigned char **p, const unsigned char *end, size_t *len,
 		  int tag)
 {
 	if ((end - *p) < 1)
-		return(TTLS_ERR_ASN1_OUT_OF_DATA);
+		return TTLS_ERR_ASN1_OUT_OF_DATA;
 
 	if (**p != tag)
-		return(TTLS_ERR_ASN1_UNEXPECTED_TAG);
+		return TTLS_ERR_ASN1_UNEXPECTED_TAG;
 
-	(*p)++;
+	++*p;
 
-	return(ttls_asn1_get_len(p, end, len));
+	return ttls_asn1_get_len(p, end, len);
 }
 
+/**
+ * Retrieve a boolean ASN.1 tag and its value.
+ * Updates the pointer to immediately behind the full tag.
+ *
+ * @p	- The position in the ASN.1 data
+ * @end	- End of data
+ * @val	- The variable that will receive the value
+ */
 int
 ttls_asn1_get_bool(unsigned char **p, const unsigned char *end, int *val)
 {
-	int ret;
+	int r;
 	size_t len;
 
-	if ((ret = ttls_asn1_get_tag(p, end, &len, TTLS_ASN1_BOOLEAN)) != 0)
-		return ret;
+	if ((r = ttls_asn1_get_tag(p, end, &len, TTLS_ASN1_BOOLEAN)))
+		return r;
 
 	if (len != 1)
-		return(TTLS_ERR_ASN1_INVALID_LENGTH);
+		return TTLS_ERR_ASN1_INVALID_LENGTH;
 
-	*val = (**p != 0) ? 1 : 0;
-	(*p)++;
+	*val = !!**p;
+	++*p;
 
 	return 0;
 }
 
+/**
+ * Retrieve an integer ASN.1 tag and its value.
+ * Updates the pointer to immediately behind the full tag.
+ *
+ * @p	- The position in the ASN.1 data
+ * @end	- End of data
+ * @val	- The variable that will receive the value
+ */
 int
 ttls_asn1_get_int(unsigned char **p, const unsigned char *end, int *val)
 {
-	int ret;
+	int r;
 	size_t len;
 
-	if ((ret = ttls_asn1_get_tag(p, end, &len, TTLS_ASN1_INTEGER)) != 0)
-		return ret;
+	if ((r = ttls_asn1_get_tag(p, end, &len, TTLS_ASN1_INTEGER)))
+		return r;
 
-	if (len == 0 || len > sizeof(int) || (**p & 0x80) != 0)
-		return(TTLS_ERR_ASN1_INVALID_LENGTH);
+	if (!len || len > sizeof(int) || (**p & 0x80))
+		return TTLS_ERR_ASN1_INVALID_LENGTH;
 
 	*val = 0;
 
 	while (len-- > 0) {
 		*val = (*val << 8) | **p;
-		(*p)++;
+		++*p;
 	}
 
 	return 0;
 }
 
+/**
+ * Retrieve a MPI value from an integer ASN.1 tag.
+ * Updates the pointer to immediately behind the full tag.
+ *
+ * @p	- The position in the ASN.1 data
+ * @end	- End of data
+ * @X	- The MPI that will receive the value
+ */
 int
 ttls_asn1_get_mpi(unsigned char **p, const unsigned char *end, TlsMpi *X)
 {
-	int ret;
+	int r;
 	size_t len;
 
-	if ((ret = ttls_asn1_get_tag(p, end, &len, TTLS_ASN1_INTEGER)))
-		return ret;
+	if ((r = ttls_asn1_get_tag(p, end, &len, TTLS_ASN1_INTEGER)))
+		return r;
 
 	ttls_mpi_read_binary(X, *p, len);
 
@@ -164,50 +189,43 @@ int
 ttls_asn1_get_bitstring(unsigned char **p, const unsigned char *end,
 			ttls_asn1_bitstring *bs)
 {
-	int ret;
+	int r;
 
 	/* Certificate type is a single byte bitstring */
-	ret = ttls_asn1_get_tag(p, end, &bs->len, TTLS_ASN1_BIT_STRING);
-	if (ret)
-		return ret;
+	if ((r = ttls_asn1_get_tag(p, end, &bs->len, TTLS_ASN1_BIT_STRING)))
+		return r;
 
 	/* Check length, subtract one for actual bit string length */
 	if (bs->len < 1)
-		return(TTLS_ERR_ASN1_OUT_OF_DATA);
+		return TTLS_ERR_ASN1_OUT_OF_DATA;
 	bs->len -= 1;
 
 	/* Get number of unused bits, ensure unused bits <= 7 */
 	bs->unused_bits = **p;
 	if (bs->unused_bits > 7)
-		return(TTLS_ERR_ASN1_INVALID_LENGTH);
-	(*p)++;
+		return TTLS_ERR_ASN1_INVALID_LENGTH;
+	++*p;
 
 	/* Get actual bitstring */
 	bs->p = *p;
 	*p += bs->len;
 
-	if (*p != end)
-		return(TTLS_ERR_ASN1_LENGTH_MISMATCH);
-
-	return 0;
+	return *p != end ? TTLS_ERR_ASN1_LENGTH_MISMATCH : 0;
 }
 
-/*
- * Get a bit string without unused bits
+/**
+ * Retrieve a bitstring ASN.1 tag without unused bits and its value.
  */
 int
 ttls_asn1_get_bitstring_null(unsigned char **p, const unsigned char *end,
 			     size_t *len)
 {
-	int ret;
+	int r;
 
-	if ((ret = ttls_asn1_get_tag(p, end, len, TTLS_ASN1_BIT_STRING)) != 0)
-		return ret;
+	if ((r = ttls_asn1_get_tag(p, end, len, TTLS_ASN1_BIT_STRING)))
+		return r;
 
-	if ((*len)-- < 2 || *(*p)++ != 0)
-		return(TTLS_ERR_ASN1_INVALID_DATA);
-
-	return 0;
+	return ((*len)-- < 2 || *(*p)++ != 0) ? -EINVAL : 0;
 }
 
 /*
@@ -217,25 +235,24 @@ int
 ttls_asn1_get_sequence_of(unsigned char **p, const unsigned char *end,
 			  ttls_asn1_sequence *cur, int tag)
 {
-	int ret;
+	int r;
 	size_t len;
 	ttls_asn1_buf *buf;
 
 	/* Get main sequence tag */
-	ret = ttls_asn1_get_tag(p, end, &len,
-				TTLS_ASN1_CONSTRUCTED | TTLS_ASN1_SEQUENCE);
-	if (ret)
-		return ret;
+	if ((r = ttls_asn1_get_tag(p, end, &len,
+				   TTLS_ASN1_CONSTRUCTED | TTLS_ASN1_SEQUENCE)))
+		return r;
 
 	if (*p + len != end)
-		return(TTLS_ERR_ASN1_LENGTH_MISMATCH);
+		return TTLS_ERR_ASN1_LENGTH_MISMATCH;
 
 	while (*p < end) {
 		buf = &(cur->buf);
 		buf->tag = **p;
 
-		if ((ret = ttls_asn1_get_tag(p, end, &buf->len, tag)) != 0)
-			return ret;
+		if ((r = ttls_asn1_get_tag(p, end, &buf->len, tag)))
+			return r;
 
 		buf->p = *p;
 		*p += buf->len;
@@ -244,10 +261,8 @@ ttls_asn1_get_sequence_of(unsigned char **p, const unsigned char *end,
 		if (*p < end) {
 			cur->next = kmalloc(sizeof(ttls_asn1_sequence),
 					    GFP_KERNEL);
-
-			if (cur->next == NULL)
-				return(TTLS_ERR_ASN1_ALLOC_FAILED);
-
+			if (!cur->next)
+				return -ENOMEM;
 			cur = cur->next;
 		}
 	}
@@ -255,32 +270,37 @@ ttls_asn1_get_sequence_of(unsigned char **p, const unsigned char *end,
 	/* Set final sequence entry's next pointer to NULL */
 	cur->next = NULL;
 
-	if (*p != end)
-		return(TTLS_ERR_ASN1_LENGTH_MISMATCH);
-
-	return 0;
+	return *p != end ? TTLS_ERR_ASN1_LENGTH_MISMATCH : 0;
 }
 
+/**
+ * Retrieve an AlgorithmIdentifier ASN.1 sequence.
+ * Updates the pointer to immediately behind the full AlgorithmIdentifier.
+ *
+ * @p	- The position in the ASN.1 data
+ * @end	- End of data
+ * @alg	- The buffer to receive the OID
+ * @params - The buffer to receive the params (if any)
+ */
 int
 ttls_asn1_get_alg(unsigned char **p, const unsigned char *end,
 		  ttls_asn1_buf *alg, ttls_asn1_buf *params)
 {
-	int ret;
+	int r;
 	size_t len;
 
-	ret = ttls_asn1_get_tag(p, end, &len,
-				TTLS_ASN1_CONSTRUCTED | TTLS_ASN1_SEQUENCE);
-	if (ret)
-		return ret;
+	if ((r = ttls_asn1_get_tag(p, end, &len,
+				   TTLS_ASN1_CONSTRUCTED | TTLS_ASN1_SEQUENCE)))
+		return r;
 
 	if ((end - *p) < 1)
-		return(TTLS_ERR_ASN1_OUT_OF_DATA);
+		return TTLS_ERR_ASN1_OUT_OF_DATA;
 
 	alg->tag = **p;
 	end = *p + len;
 
-	if ((ret = ttls_asn1_get_tag(p, end, &alg->len, TTLS_ASN1_OID)) != 0)
-		return ret;
+	if ((r = ttls_asn1_get_tag(p, end, &alg->len, TTLS_ASN1_OID)))
+		return r;
 
 	alg->p = *p;
 	*p += alg->len;
@@ -291,35 +311,31 @@ ttls_asn1_get_alg(unsigned char **p, const unsigned char *end,
 	}
 
 	params->tag = **p;
-	(*p)++;
+	++*p;
 
-	if ((ret = ttls_asn1_get_len(p, end, &params->len)) != 0)
-		return ret;
+	if ((r = ttls_asn1_get_len(p, end, &params->len)))
+		return r;
 
 	params->p = *p;
 	*p += params->len;
 
-	if (*p != end)
-		return(TTLS_ERR_ASN1_LENGTH_MISMATCH);
-
-	return 0;
+	return *p != end ? TTLS_ERR_ASN1_LENGTH_MISMATCH : 0;
 }
 
 int
 ttls_asn1_get_alg_null(unsigned char **p, const unsigned char *end,
 		       ttls_asn1_buf *alg)
 {
-	int ret;
+	int r;
 	ttls_asn1_buf params;
 
 	memset(&params, 0, sizeof(ttls_asn1_buf));
 
-	if ((ret = ttls_asn1_get_alg(p, end, alg, &params)) != 0)
-		return ret;
+	if ((r = ttls_asn1_get_alg(p, end, alg, &params)))
+		return r;
 
-	if ((params.tag != TTLS_ASN1_NULL && params.tag != 0) || params.len != 0)
-		return(TTLS_ERR_ASN1_INVALID_DATA);
-
+	if ((params.tag != TTLS_ASN1_NULL && params.tag) || params.len)
+		return -EINVAL;
 	return 0;
 }
 
@@ -333,7 +349,7 @@ ttls_asn1_get_alg_null(unsigned char **p, const unsigned char *end,
  *
  * @return the length written or a negative error code.
  */
-int
+static int
 ttls_asn1_write_len(unsigned char **p, unsigned char *start, size_t len)
 {
 	if (len < 0x80) {
@@ -398,7 +414,7 @@ ttls_asn1_write_len(unsigned char **p, unsigned char *start, size_t len)
  *
  * @return the length written or a negative error code.
  */
-int
+static int
 ttls_asn1_write_tag(unsigned char **p, unsigned char *start, unsigned char tag)
 {
 	if (*p - start < 1)
@@ -419,7 +435,7 @@ ttls_asn1_write_tag(unsigned char **p, unsigned char *start, unsigned char tag)
  *
  * @return the length written or a negative error code.
  */
-int
+static int
 ttls_asn1_write_mpi(unsigned char **p, unsigned char *start, const TlsMpi *X)
 {
 	int ret;
@@ -450,4 +466,48 @@ ttls_asn1_write_mpi(unsigned char **p, unsigned char *start, const TlsMpi *X)
 
 cleanup:
 	return ret;
+}
+
+/*
+ * RFC 8422 page 18:
+ *
+ *  Ecdsa-Sig-Value ::= SEQUENCE {
+ *	r	INTEGER,
+ *	s	INTEGER
+ *  }
+ *
+ * Size is at most 1 (tag) + 1 (len) + 1 (initial 0) + ECP_MAX_BYTES for each
+ * of r and s, twice that + 1 (tag) + 2 (len) for the sequence (assuming
+ * ECP_MAX_BYTES is less than 126 for r and s, and less than 124
+ * (total len <= 255) for the sequence).
+ */
+#if TTLS_ECP_MAX_BYTES > 124
+#error "TTLS_ECP_MAX_BYTES bigger than expected, please fix TTLS_ECDSA_MAX_LEN"
+#endif
+/* The maximal size of an ECDSA signature in bytes. */
+#define TTLS_ECDSA_MAX_LEN	(3 + 2 * (3 + TTLS_ECP_MAX_BYTES))
+
+/**
+ * Convert a signature (given by context) to ASN.1.
+ */
+int
+ecdsa_signature_to_asn1(const TlsMpi *r, const TlsMpi *s, unsigned char *sig,
+			size_t *slen)
+{
+	int ret;
+	unsigned char buf[TTLS_ECDSA_MAX_LEN];
+	unsigned char *p = buf + sizeof(buf);
+	size_t len = 0;
+
+	TTLS_ASN1_CHK_ADD(len, ttls_asn1_write_mpi(&p, buf, s));
+	TTLS_ASN1_CHK_ADD(len, ttls_asn1_write_mpi(&p, buf, r));
+
+	TTLS_ASN1_CHK_ADD(len, ttls_asn1_write_len(&p, buf, len));
+	TTLS_ASN1_CHK_ADD(len, ttls_asn1_write_tag(&p, buf,
+			   TTLS_ASN1_CONSTRUCTED | TTLS_ASN1_SEQUENCE));
+
+	memcpy_fast(sig, p, len);
+	*slen = len;
+
+	return 0;
 }

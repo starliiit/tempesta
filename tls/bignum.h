@@ -31,6 +31,8 @@
 #undef DEBUG
 #endif
 
+#include "bignum_asm.h"
+
 #define TTLS_MPI_CHK(f)							\
 do {									\
 	if (WARN((ret = (f)), #f " returns %d", ret))			\
@@ -62,6 +64,7 @@ do {									\
 #define BIL			(CIL << 3)	/* bits in limb */
 #define BIH			(CIL << 2)	/* half limb size */
 #define BMASK			(BIL - 1)
+#define BITS_TO_CHARS(n)	(((n) + 7) / 8)
 #define BITS_TO_LIMBS(n)	(((n) + BIL - 1) >> BSHIFT)
 #define CHARS_TO_LIMBS(n)	(((n) + CIL - 1) >> LSHIFT)
 
@@ -76,7 +79,7 @@ do {									\
  * @used	- used limbs;
  * @limbs	- total # of limbs;
  * @_off	- offset of limbs array remote memory. Can be negative for MPIs
- *		  allocated on the stack;
+ *            allocated on the stack;
  *
  * MPI is placed in relatively small areas of memory (PK context pages or
  * per-cpu pages for temporal calculations withing single handshake FSM state),
@@ -96,12 +99,10 @@ typedef struct {
  *
  * @order	- page order of the underneath memory area;
  * @curr	- offset of free memory area for MPI allocations;
- * @tmp_tail	- offset of reclaimable memory area for allocations.
  */
 typedef struct {
 	unsigned int		order;
-	unsigned short		curr;
-	unsigned short		curr_tail;
+	unsigned int		curr;
 } TlsMpiPool;
 
 /**
@@ -145,10 +146,14 @@ do {									\
 	(X)->limbs = ln;						\
 } while (0)
 
+#define ttls_mpi_alloca_zero(X, ln)					\
+do {									\
+	ttls_mpi_alloca_init(X, ln);					\
+	bzero_fast(MPI_P(X), ln * CIL);					\
+} while (0)
+
 TlsMpi *ttls_mpi_alloc_stack_init(size_t nlimbs);
 void ttls_mpi_alloc(TlsMpi *X, size_t nblimbs);
-void ttls_mpi_alloc_tmp(TlsMpi *X, size_t nblimbs);
-void ttls_mpi_reset(TlsMpi *X);
 
 void mpi_fixup_used(TlsMpi *X, size_t n);
 void ttls_mpi_copy_alloc(TlsMpi *X, const TlsMpi *Y, bool need_alloc);
@@ -158,12 +163,11 @@ void ttls_mpi_read_binary(TlsMpi *X, const unsigned char *buf, size_t buflen);
 int ttls_mpi_write_binary(const TlsMpi *X, unsigned char *buf, size_t buflen);
 void ttls_mpi_fill_random(TlsMpi *X, size_t size);
 
-void ttls_mpi_safe_cond_assign(TlsMpi *X, const TlsMpi *Y, unsigned char assign);
 int ttls_mpi_safe_cond_swap(TlsMpi *X, TlsMpi *Y, unsigned char swap);
 
 void ttls_mpi_lset(TlsMpi *X, long z);
 
-void ttls_mpi_shift_l(TlsMpi *X, size_t count);
+void ttls_mpi_shift_l(TlsMpi *X, const TlsMpi *A, size_t count);
 void ttls_mpi_shift_r(TlsMpi *X, size_t count);
 int ttls_mpi_get_bit(const TlsMpi *X, size_t pos);
 void ttls_mpi_set_bit(TlsMpi *X, size_t pos, unsigned char val);
@@ -184,12 +188,13 @@ void ttls_mpi_sub_int(TlsMpi *X, const TlsMpi *A, long b);
 
 void ttls_mpi_mul_mpi(TlsMpi *X, const TlsMpi *A, const TlsMpi *B);
 void ttls_mpi_mul_uint(TlsMpi *X, const TlsMpi *A, unsigned long b);
+void ttls_mpi_mul_int(TlsMpi *X, const TlsMpi *A, long b);
 void ttls_mpi_div_mpi(TlsMpi *Q, TlsMpi *R, const TlsMpi *A, const TlsMpi *B);
 void ttls_mpi_mod_mpi(TlsMpi *R, const TlsMpi *A, const TlsMpi *B);
 
 int ttls_mpi_exp_mod(TlsMpi *X, const TlsMpi *A, const TlsMpi *E,
 		     const TlsMpi *N, TlsMpi *_RR);
-int ttls_mpi_inv_mod(TlsMpi *X, const TlsMpi *A, const TlsMpi *N);
+void ttls_mpi_inv_mod(TlsMpi *X, const TlsMpi *A, const TlsMpi *N);
 void ttls_mpi_gcd(TlsMpi *G, const TlsMpi *A, const TlsMpi *B);
 
 static inline bool
@@ -203,6 +208,42 @@ ttls_mpi_copy(TlsMpi *X, const TlsMpi *Y)
 {
 	BUG_ON(X == Y);
 	ttls_mpi_copy_alloc(X, Y, X->limbs < Y->used);
+}
+
+static inline bool
+ttls_mpi_eq_0(const TlsMpi *X)
+{
+	return X->used == 1 && X->s == 1 && MPI_P(X)[0] == 0;
+}
+
+static inline bool
+ttls_mpi_eq_1(const TlsMpi *X)
+{
+	return X->used == 1 && X->s == 1 && MPI_P(X)[0] == 1;
+}
+
+static inline void
+ttls_mpi_tpl_x86_64_4(TlsMpi *X, const TlsMpi *A)
+{
+	mpi_tpl_x86_64_4(MPI_P(X), MPI_P(A));
+	mpi_fixup_used(X, A->used + 1);
+}
+
+/* TODO #1064 not 4-limbs optimized, but we have not so many users yet. */
+static void inline
+mpi_add_x86_64_4(TlsMpi *X, const TlsMpi *A, const TlsMpi *B)
+{
+	X->used = mpi_add_x86_64(MPI_P(X), X->limbs, MPI_P(B), B->used,
+				 MPI_P(A), A->used);
+}
+
+static void inline
+mpi_shift_l1_x86_64_4(TlsMpi *X, const TlsMpi *A)
+{
+	unsigned long *x = MPI_P(X);
+
+	mpi_shift_l_x86_64_4(x, MPI_P(A), 1);
+	X->used = A->used + !!x[4];
 }
 
 #ifdef DEBUG

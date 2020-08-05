@@ -63,4 +63,9 @@
 #define bzero_fast(a, n)	bzero(a, n)
 #endif
 
+struct timer_list
+{
+
+};
+
 #endif /* __KTEST_H__ */
