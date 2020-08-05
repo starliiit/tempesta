@@ -3653,14 +3653,14 @@ tfw_http_resp_fwd(TfwHttpResp *resp)
 	 * processing ret_queue and make the current softirq retry from
 	 * determination of req_retent.
 	 */
-	tfw_cli_conn_get(cli_conn);
+	tfw_connection_get((TfwConn *)(cli_conn));
 	spin_lock_bh(&cli_conn->ret_qlock);
 	spin_unlock_bh(&cli_conn->seq_qlock);
 
 	__tfw_http_resp_fwd(cli_conn, &ret_queue);
 
 	spin_unlock_bh(&cli_conn->ret_qlock);
-	tfw_cli_conn_put(cli_conn);
+	tfw_connection_put((TfwConn *)(cli_conn));
 
 	/* Zap request/responses that were not sent due to an error. */
 	if (!list_empty(&ret_queue)) {
